@@ -44,7 +44,7 @@
     "note": "SOL NinjaTrader"
   },
   "sessions": {
-    "block_asian_session": true,
+    "block_asian_session": false,
     "asian_start":         "23:00",
     "asian_end":           "08:00"
   }
