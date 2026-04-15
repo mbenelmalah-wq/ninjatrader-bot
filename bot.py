@@ -390,8 +390,8 @@ def dashboard():
     eq        = get_equity()
     cap       = get_capital()
     trades    = trades_history
-    wins      = [t for t in trades if t.get("pnl", 0) > 0]
-    total_pnl = sum(t.get("pnl", 0) for t in trades)
+    wins      = [t for t in trades if (t.get("pnl") or 0) > 0]
+    total_pnl = sum(t.get("pnl") or 0 for t in trades)
     wr        = round(len(wins) / len(trades) * 100, 1) if trades else 0
     pnl_color = "#00e676" if total_pnl >= 0 else "#ff5252"
     eq_color  = "#00e676" if eq >= 100000 else "#ff5252"
