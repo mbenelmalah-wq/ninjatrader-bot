@@ -1,0 +1,42 @@
+{
+  "alpaca": {
+    "endpoint":   "https://paper-api.alpaca.markets/v2",
+    "api_key":    "PKEFVPMEGWESPIXZHBDVFREHQ7",
+    "api_secret": "Ap43VBZwsiocUBSyEeDAQkjKgoR4SHsqy8euojNx4dnX",
+    "mode":       "paper"
+  },
+  "webhook_token": "ninjatrader_secret_2026",
+
+  "money_management_default": {
+    "take_profit_pct":        0.015,
+    "trailing_sl_pct":        0.003,
+    "trail_step_pct":         0.0015,
+    "profit_trigger_pct":     0.002,
+    "default_win_rate":       0.55,
+    "default_win_loss_ratio": 2.0,
+    "note": "Paramètres défaut NinjaTrader"
+  },
+  "money_management_BTCUSD": {
+    "take_profit_pct":        0.005,
+    "trailing_sl_pct":        0.003,
+    "trail_step_pct":         0.0015,
+    "profit_trigger_pct":     0.003,
+    "default_win_rate":       0.55,
+    "default_win_loss_ratio": 2.0,
+    "note": "BTC NinjaTrader"
+  },
+  "money_management_ETHUSD": {
+    "take_profit_pct":        0.015,
+    "trailing_sl_pct":        0.0015,
+    "trail_step_pct":         0.0015,
+    "profit_trigger_pct":     0.002,
+    "default_win_rate":       0.55,
+    "default_win_loss_ratio": 2.5,
+    "note": "ETH NinjaTrader"
+  },
+  "sessions": {
+    "block_asian_session": true,
+    "asian_start":         "23:00",
+    "asian_end":           "08:00"
+  }
+}
