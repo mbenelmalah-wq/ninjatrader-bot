@@ -1,14 +1,18 @@
 // ═══════════════════════════════════════════════════════════════
 // BelkhayateWebhook.cs — NinjaTrader 8
 //
-// Détection autonome de signaux Order Flow (delta exhaustion)
-// Réplique la logique de Belkhayate sans dépendre du DLL
+// Détection Order Flow delta exhaustion — version calibration
 //
 // INSTALLATION :
 // 1. NinjaTrader → Tools → Edit NinjaScript → Strategy
 // 2. Nouveau → colle ce code → Compile (F5)
 // 3. Ajoute sur le chart BTC APR26
-// 4. Calculate = OnEachTick pour meilleure précision
+// 4. Ouvre Output window (Control+F8) pour voir les deltas en live
+//
+// CALIBRATION :
+// Regarde les lignes [DELTA] dans l'Output window.
+// Quand Belkhayate montre une flèche, note le prevDelta affiché.
+// Règle DeltaThreshold = cette valeur dans les propriétés.
 // ═══════════════════════════════════════════════════════════════
 
 #region Using declarations
@@ -31,21 +35,27 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const string WEBHOOK_TOKEN = "ninjatrader_secret_2026";
         private const string ALPACA_SYMBOL = "BTCUSD";
 
-        // Seuils de détection — ajuste selon ton instrument
         [NinjaScriptProperty]
-        public double DeltaThreshold { get; set; } = 10.0;  // delta min pour valider signal
+        [Display(Name = "Delta Threshold", Description = "Seuil delta absolu pour valider signal. Baisse si pas de signaux. Voir Output window.", Order = 1, GroupName = "Paramètres")]
+        public double DeltaThreshold { get; set; } = 1.0;
 
         [NinjaScriptProperty]
-        public int CooldownBars { get; set; } = 3;  // bougies minimum entre deux signaux
+        [Display(Name = "Cooldown Bars", Description = "Bougies minimum entre deux signaux", Order = 2, GroupName = "Paramètres")]
+        public int CooldownBars { get; set; } = 3;
+
+        [NinjaScriptProperty]
+        [Display(Name = "Log Delta (calibration)", Description = "Affiche le delta de chaque bougie dans Output window", Order = 3, GroupName = "Paramètres")]
+        public bool LogDelta { get; set; } = true;
         // ─────────────────────────────────────────────────────────
 
         private static readonly HttpClient http = new HttpClient();
 
-        // Delta calculé tick par tick
-        private double barDelta     = 0;
-        private double prevDelta    = 0;
+        private double barDelta      = 0;
+        private double prevDelta     = 0;
         private int    lastSignalBar = -99;
         private string lastSide      = "";
+        private int    signalsSent   = 0;
+        private int    signalsFiltered = 0;
 
         protected override void OnStateChange()
         {
@@ -55,19 +65,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Name           = "BelkhayateWebhook";
                 Calculate      = Calculate.OnEachTick;
                 IsOverlay      = true;
-                DeltaThreshold = 10.0;
+                DeltaThreshold = 1.0;
                 CooldownBars   = 3;
-            }
-            if (State == State.Configure)
-            {
-                // Activer les données tick pour calcul delta
-                AddDataSeries(BarsPeriodType.Tick, 1);
+                LogDelta       = true;
             }
         }
 
         protected override void OnMarketData(MarketDataEventArgs e)
         {
-            // Calcul delta : achats au Ask = positif, ventes au Bid = négatif
             if (e.MarketDataType == MarketDataType.Last)
             {
                 if (e.Price >= e.Ask)
@@ -79,46 +84,51 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         protected override void OnBarUpdate()
         {
-            // Traiter uniquement la série principale (pas les ticks)
             if (BarsInProgress != 0) return;
             if (CurrentBar < 3) return;
 
-            // Cooldown : pas de signal si bougies insuffisantes
-            if (CurrentBar - lastSignalBar < CooldownBars) return;
+            // Sauvegarde delta à la clôture de la bougie
+            if (IsFirstTickOfBar)
+            {
+                if (LogDelta)
+                    Print($"[DELTA] Bar {CurrentBar - 1} | prevDelta={prevDelta:F2} → barDelta={barDelta:F2} | Close={Close[1]:F2}");
 
-            bool buySignal  = false;
-            bool sellSignal = false;
+                prevDelta = barDelta;
+                barDelta  = 0;
+            }
 
-            // ── Logique delta exhaustion (Belkhayate style) ──────
-            // BUY  : delta précédent très négatif → retournement positif
-            if (prevDelta <= -DeltaThreshold && barDelta > 0 && Close[0] > Open[0])
-                buySignal = true;
+            // Cooldown
+            if (CurrentBar - lastSignalBar < CooldownBars)
+            {
+                signalsFiltered++;
+                return;
+            }
 
-            // SELL : delta précédent très positif → retournement négatif
-            if (prevDelta >= DeltaThreshold && barDelta < 0 && Close[0] < Open[0])
-                sellSignal = true;
+            // ── Détection delta exhaustion ────────────────────────
+            // BUY  : accumulation vendeuse → retournement acheteur
+            bool buySignal  = prevDelta <= -DeltaThreshold && barDelta > 0;
 
-            // ── Envoi signal ──────────────────────────────────────
+            // SELL : accumulation acheteuse → retournement vendeur
+            bool sellSignal = prevDelta >= DeltaThreshold  && barDelta < 0;
+
+            if (LogDelta && (buySignal || sellSignal))
+                Print($"[SIGNAL] {'▲ BUY' + (buySignal ? " détecté" : "") + (sellSignal ? " ▼ SELL détecté" : "")} | prevDelta={prevDelta:F2} barDelta={barDelta:F2} @ {Close[0]:F2}");
+
             if (buySignal && lastSide != "buy")
             {
                 lastSide      = "buy";
                 lastSignalBar = CurrentBar;
-                Print($"[Belkhayate] ▲ BUY | delta={barDelta:F1} prevDelta={prevDelta:F1} @ {Close[0]}");
+                signalsSent++;
+                Print($"[Belkhayate] ▲ BUY #{signalsSent} | prevDelta={prevDelta:F2} barDelta={barDelta:F2} @ {Close[0]:F2}");
                 SendWebhook("buy");
             }
             else if (sellSignal && lastSide != "sell")
             {
                 lastSide      = "sell";
                 lastSignalBar = CurrentBar;
-                Print($"[Belkhayate] ▼ SELL | delta={barDelta:F1} prevDelta={prevDelta:F1} @ {Close[0]}");
+                signalsSent++;
+                Print($"[Belkhayate] ▼ SELL #{signalsSent} | prevDelta={prevDelta:F2} barDelta={barDelta:F2} @ {Close[0]:F2}");
                 SendWebhook("sell");
-            }
-
-            // Sauvegarde delta de la bougie fermée
-            if (IsFirstTickOfBar)
-            {
-                prevDelta = barDelta;
-                barDelta  = 0;
             }
         }
 
