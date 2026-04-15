@@ -20,4 +20,4 @@
 |-----|-------------|-------|--------|
 | SPLV3 | `alpaca-trading-bot-production-f693.up.railway.app/webhook` | `splv3_secret_2026` | Compte 1 |
 | LuxAlgo | `web-production-b2c39d.up.railway.app/webhook` | `luxalgo_secret_2026` | Compte 2 |
-| NinjaTrader | `À définir après déploiement Railway` | `ninjatrader_secret_2026` | Compte 3 |
+| NinjaTrader | `web-production-365ec.up.railway.app/webhook` | `ninjatrader_secret_2026` | Compte 3 |
