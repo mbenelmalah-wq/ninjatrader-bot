@@ -36,6 +36,7 @@ app = Flask(__name__)
 
 trades_history = []
 cooldown_last  = {}
+last_signal    = {}   # {"time", "symbol", "side", "source", "status"}
 
 # ── State trailing SL ─────────────────────────────────────────────────────────
 @dataclass
@@ -186,6 +187,15 @@ def webhook():
         if side not in ("buy", "sell"):
             return jsonify({"error": "side invalide"}), 400
 
+        # Enregistrement dernier signal reçu
+        last_signal.update({
+            "time":   datetime.utcnow().strftime("%H:%M:%S"),
+            "symbol": symbol,
+            "side":   side,
+            "source": source,
+            "status": "reçu"
+        })
+
         # Filtre session asiatique
         if is_asian_session():
             log.info("Session asiatique — signal ignoré")
@@ -280,6 +290,7 @@ def webhook():
             "mise":   mise
         })
 
+        last_signal["status"] = "exécuté ✅"
         log.info(f"  BUY {symbol} qty={qty} @ {prix:.2f} | SL={sl:.2f} TP={tp:.2f} | mise=${mise:.2f}")
         return jsonify({"status": "executed", "symbol": symbol, "qty": qty,
                         "entry": prix, "sl": sl, "tp": tp})
@@ -292,33 +303,65 @@ def webhook():
 @app.route("/")
 @app.route("/dashboard")
 def dashboard():
-    eq       = get_equity()
-    cap      = get_capital()
-    trades   = trades_history
-    wins     = [t for t in trades if t.get("pnl", 0) > 0]
-    losses   = [t for t in trades if t.get("pnl", 0) < 0]
+    eq        = get_equity()
+    cap       = get_capital()
+    trades    = trades_history
+    wins      = [t for t in trades if t.get("pnl", 0) > 0]
     total_pnl = sum(t.get("pnl", 0) for t in trades)
     wr        = round(len(wins) / len(trades) * 100, 1) if trades else 0
     pnl_color = "#00e676" if total_pnl >= 0 else "#ff5252"
     eq_color  = "#00e676" if eq >= 100000 else "#ff5252"
+    asian     = is_asian_session()
 
+    # Dernier signal
+    sig = last_signal
+    if sig:
+        sig_side_color = "#00e676" if sig.get("side") == "buy" else "#ff5252"
+        sig_arrow      = "▲ BUY" if sig.get("side") == "buy" else "▼ SELL"
+        sig_html = f"""
+        <div class="card" style="border-color:#f0883e44;margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <span style="color:#8b949e;font-size:.75rem">DERNIER SIGNAL BELKHAYATE</span>
+            <span style="color:#8b949e;font-size:.75rem">{sig.get('time','')} UTC</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center">
+            <div>
+              <div style="color:#8b949e;font-size:.7rem">Direction</div>
+              <div style="color:{sig_side_color};font-size:1.1rem;font-weight:700">{sig_arrow}</div>
+            </div>
+            <div>
+              <div style="color:#8b949e;font-size:.7rem">Symbole</div>
+              <div style="font-size:1.1rem;font-weight:700">{sig.get('symbol','')}</div>
+            </div>
+            <div>
+              <div style="color:#8b949e;font-size:.7rem">Statut</div>
+              <div style="color:#f0883e;font-size:.9rem;font-weight:600">{sig.get('status','')}</div>
+            </div>
+          </div>
+        </div>"""
+    else:
+        sig_html = '<div class="card" style="text-align:center;color:#8b949e;padding:16px;margin-bottom:14px">En attente du premier signal Belkhayate...</div>'
+
+    # Positions ouvertes
     positions_html = ""
     for sym, t in active_trails.items():
         prix_now = get_prix(sym) or t.entry
         pnl_live = round((prix_now - t.entry) / t.entry * 100, 3)
+        pnl_usd  = round((prix_now - t.entry) / t.entry * t.mise, 2)
         pc = "#00e676" if pnl_live >= 0 else "#ff5252"
         positions_html += f"""
         <div class="card pos-card">
-            <div class="pos-sym">{sym}</div>
+            <div class="pos-sym">▲ {sym} <span style="font-size:.75rem;color:#8b949e">BUY</span></div>
             <div class="pos-grid">
                 <span>Entrée</span><span>${t.entry:,.2f}</span>
                 <span>Prix actuel</span><span>${prix_now:,.2f}</span>
                 <span>SL</span><span style="color:#ff5252">${t.sl:,.2f}</span>
                 <span>TP</span><span style="color:#00e676">${t.tp:,.2f}</span>
-                <span>P&L live</span><span style="color:{pc}">{'+' if pnl_live>=0 else ''}{pnl_live}%</span>
+                <span>P&L live</span><span style="color:{pc}">{'+' if pnl_live>=0 else ''}{pnl_live}% ({'+$' if pnl_usd>=0 else '-$'}{abs(pnl_usd):.2f})</span>
             </div>
         </div>"""
 
+    # Historique
     trades_html = ""
     for t in reversed(trades[-20:]):
         pnl = t.get("pnl")
@@ -326,23 +369,24 @@ def dashboard():
             pc = "#00e676" if pnl >= 0 else "#ff5252"
             pnl_str = f'<span style="color:{pc}">{"+$" if pnl>=0 else "-$"}{abs(pnl):.2f}</span>'
         else:
-            pnl_str = '<span style="color:#aaa">En cours</span>'
+            pnl_str = '<span style="color:#f0883e">En cours</span>'
         trades_html += f"""
         <tr>
             <td>{t["time"][11:16]}</td>
             <td>{t["symbol"]}</td>
-            <td style="color:{'#00e676' if t['side']=='buy' else '#ff5252'}">{t['side'].upper()}</td>
-            <td><small>{t.get("source","")}</small></td>
+            <td style="color:{'#00e676' if t['side']=='buy' else '#ff5252'}">{'▲ BUY' if t['side']=='buy' else '▼ SELL'}</td>
             <td>${t["entry"]:,.1f}</td>
             <td>{pnl_str}</td>
         </tr>"""
+
+    session_banner = f'<div style="background:#ff525211;border:1px solid #ff525233;border-radius:8px;padding:8px;text-align:center;color:#ff5252;font-size:.8rem;margin-bottom:12px">⏸ Session asiatique active — signaux bloqués jusqu\'à 08:00 UTC</div>' if asian else ""
 
     return f"""<!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NinjaTrader Bot</title>
+<title>Belkhayate Bot</title>
 <meta http-equiv="refresh" content="15">
 <style>
   * {{ box-sizing:border-box; margin:0; padding:0 }}
@@ -366,7 +410,11 @@ def dashboard():
 </style>
 </head>
 <body>
-<h1><span class="dot"></span>NinjaTrader Bot <span class="badge">PAPER</span></h1>
+<h1><span class="dot"></span>Belkhayate Orderflow Bot <span class="badge">PAPER</span></h1>
+
+{session_banner}
+
+{sig_html}
 
 <div class="grid">
   <div class="card">
@@ -400,11 +448,11 @@ def dashboard():
 <h2>Derniers trades ({len(trades)})</h2>
 <div style="overflow-x:auto">
 <table>
-  <tr><th>Heure</th><th>Sym</th><th>Side</th><th>Source</th><th>Entrée</th><th>P&L</th></tr>
-  {trades_html if trades_html else '<tr><td colspan="6" style="text-align:center;color:#8b949e;padding:20px">En attente des signaux NinjaTrader...</td></tr>'}
+  <tr><th>Heure</th><th>Sym</th><th>Side</th><th>Entrée</th><th>P&L</th></tr>
+  {trades_html if trades_html else '<tr><td colspan="5" style="text-align:center;color:#8b949e;padding:20px">En attente des signaux Belkhayate...</td></tr>'}
 </table>
 </div>
-<p style="text-align:center;color:#8b949e;font-size:.7rem;margin-top:12px">Refresh auto 15s</p>
+<p style="text-align:center;color:#8b949e;font-size:.7rem;margin-top:12px">Refresh auto 15s — Belkhayate Orderflow → BTCUSD Alpaca</p>
 </body></html>"""
 
 # ── Start ──────────────────────────────────────────────────────────────────────
