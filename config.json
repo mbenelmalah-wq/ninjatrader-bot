@@ -34,6 +34,15 @@
     "default_win_loss_ratio": 2.5,
     "note": "ETH NinjaTrader"
   },
+  "money_management_SOLUSD": {
+    "take_profit_pct":        0.015,
+    "trailing_sl_pct":        0.003,
+    "trail_step_pct":         0.0015,
+    "profit_trigger_pct":     0.003,
+    "default_win_rate":       0.55,
+    "default_win_loss_ratio": 2.0,
+    "note": "SOL NinjaTrader"
+  },
   "sessions": {
     "block_asian_session": true,
     "asian_start":         "23:00",

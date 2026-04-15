@@ -34,9 +34,11 @@ log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-trades_history = []
-cooldown_last  = {}
-last_signal    = {}   # {"time", "symbol", "side", "source", "status"}
+trades_history     = []
+cooldown_last      = {}
+last_signal        = {}   # {"time", "symbol", "side", "source", "status"}
+consecutive_losses = 0
+pause_until        = None
 
 # ── State trailing SL ─────────────────────────────────────────────────────────
 @dataclass
@@ -153,6 +155,35 @@ def half_kelly(capital, mm):
     half  = kelly * 0.5
     return round(capital * half, 2)
 
+# ── Chargement historique depuis Alpaca (persistant après redéploiement) ───────
+def load_history_from_alpaca():
+    try:
+        orders = api_call("GET", "/orders?status=closed&limit=50&direction=desc")
+        if not isinstance(orders, list):
+            return
+        for o in orders:
+            if o.get("filled_at") and o.get("side") == "buy":
+                raw_sym = o.get("symbol", "").replace("/", "")
+                if not raw_sym.endswith("USD"):
+                    raw_sym = raw_sym + "USD"
+                entry = float(o.get("filled_avg_price") or 0)
+                trades_history.append({
+                    "time":   o.get("filled_at", "")[:16].replace("T", " "),
+                    "symbol": raw_sym,
+                    "side":   "buy",
+                    "source": "ALPACA_HISTORY",
+                    "entry":  entry,
+                    "sl":     0,
+                    "tp":     0,
+                    "mise":   float(o.get("filled_qty") or 0) * entry,
+                    "exit":   entry,
+                    "pnl":    None,
+                    "reason": "historique"
+                })
+        log.info(f"Historique chargé : {len(trades_history)} trades depuis Alpaca")
+    except Exception as e:
+        log.warning(f"load_history: {e}")
+
 # ── Monitor Trailing SL ────────────────────────────────────────────────────────
 def monitor_loop():
     while True:
@@ -192,6 +223,7 @@ def monitor_loop():
         time.sleep(30)
 
 def _close_trade(symbol, prix_exit, pnl, reason):
+    global consecutive_losses, pause_until
     cooldown_last[symbol] = datetime.utcnow()
     for t in reversed(trades_history):
         if t["symbol"] == symbol and "exit" not in t:
@@ -199,6 +231,14 @@ def _close_trade(symbol, prix_exit, pnl, reason):
             t["reason"] = reason
             t["pnl"]    = pnl
             break
+    # Pause pertes consécutives
+    if pnl < 0:
+        consecutive_losses += 1
+        if consecutive_losses >= 3:
+            pause_until = datetime.utcnow().replace(tzinfo=None) + __import__("datetime").timedelta(minutes=90)
+            log.warning(f"3 pertes consécutives — pause jusqu'à {pause_until.strftime('%H:%M')} UTC")
+    else:
+        consecutive_losses = 0
 
 # ── Webhook ────────────────────────────────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
@@ -231,6 +271,12 @@ def webhook():
         if is_asian_session():
             log.info("Session asiatique — signal ignoré")
             return jsonify({"status": "asian_session_blocked"})
+
+        # Pause pertes consécutives
+        if pause_until and datetime.utcnow() < pause_until:
+            reste = int((pause_until - datetime.utcnow()).total_seconds() / 60)
+            log.info(f"Pause pertes — encore {reste} min")
+            return jsonify({"status": "pause_pertes", "minutes_restantes": reste})
 
         # SELL ignoré — sortie gérée uniquement par le Trailing SL
         if side == "sell":
@@ -321,6 +367,21 @@ def webhook():
     except Exception as e:
         log.error(f"Webhook error: {e}")
         return jsonify({"error": str(e)}), 500
+
+# ── Status JSON ───────────────────────────────────────────────────────────────
+@app.route("/status")
+def status():
+    return jsonify({
+        "status":              "running",
+        "time":                datetime.utcnow().isoformat(),
+        "capital":             get_capital(),
+        "equity":              get_equity(),
+        "positions":           list(active_trails.keys()),
+        "trails":              {s: {"entry": t.entry, "sl": t.sl, "tp": t.tp} for s, t in active_trails.items()},
+        "consecutive_losses":  consecutive_losses,
+        "pause_pertes":        pause_until.isoformat() if pause_until else None,
+        "cooldowns":           {s: t.isoformat() for s, t in cooldown_last.items()},
+    })
 
 # ── Dashboard ──────────────────────────────────────────────────────────────────
 @app.route("/")
@@ -480,6 +541,7 @@ def dashboard():
 
 # ── Start ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    load_history_from_alpaca()
     t = threading.Thread(target=monitor_loop, daemon=True)
     t.start()
     port = int(os.environ.get("PORT", 8080))
