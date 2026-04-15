@@ -36,16 +36,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const string ALPACA_SYMBOL = "BTCUSD";
 
         [NinjaScriptProperty]
-        [Display(Name = "Delta Threshold", Description = "Seuil delta absolu pour valider signal. Baisse si pas de signaux. Voir Output window.", Order = 1, GroupName = "Paramètres")]
-        public double DeltaThreshold { get; set; } = 1.0;
+        public double DeltaThreshold { get; set; } = 1.0;   // Seuil delta absolu (baisse si pas de signaux)
 
         [NinjaScriptProperty]
-        [Display(Name = "Cooldown Bars", Description = "Bougies minimum entre deux signaux", Order = 2, GroupName = "Paramètres")]
-        public int CooldownBars { get; set; } = 3;
+        public int CooldownBars { get; set; } = 3;           // Bougies min entre deux signaux
 
         [NinjaScriptProperty]
-        [Display(Name = "Log Delta (calibration)", Description = "Affiche le delta de chaque bougie dans Output window", Order = 3, GroupName = "Paramètres")]
-        public bool LogDelta { get; set; } = true;
+        public bool LogDelta { get; set; } = true;           // Affiche delta dans Output window
         // ─────────────────────────────────────────────────────────
 
         private static readonly HttpClient http = new HttpClient();

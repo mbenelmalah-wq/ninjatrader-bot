@@ -37,28 +37,22 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         // ── Paramètres configurables ──────────────────────────────
         [NinjaScriptProperty]
-        [Display(Name = "Symbole Alpaca", Description = "Ex: BTCUSD, ETHUSD, SOLUSD", Order = 1, GroupName = "Webhook")]
-        public string AlpacaSymbol { get; set; } = "BTCUSD";
+        public string AlpacaSymbol { get; set; } = "BTCUSD";         // Ex: BTCUSD, ETHUSD, SOLUSD
 
         [NinjaScriptProperty]
-        [Display(Name = "Cooldown (bougies)", Description = "Bougies minimum entre deux signaux", Order = 2, GroupName = "Webhook")]
-        public int CooldownBars { get; set; } = 3;
+        public int CooldownBars { get; set; } = 3;                    // Bougies min entre deux signaux
 
         [NinjaScriptProperty]
-        [Display(Name = "Delta Slope Threshold", Description = "Seuil deltaSlope pour valider signal (défaut 0.2). Baisse si peu de signaux.", Order = 3, GroupName = "Filtres")]
-        public double DeltaSlopeThreshold { get; set; } = 0.2;
+        public double DeltaSlopeThreshold { get; set; } = 0.2;        // Seuil deltaSlope (baisse si peu de signaux)
 
         [NinjaScriptProperty]
-        [Display(Name = "Iceberg Vol Multiplier", Description = "Multiplicateur volume pour détecter iceberg (défaut 1.5)", Order = 4, GroupName = "Filtres")]
-        public double IcebergVolMult { get; set; } = 1.5;
+        public double IcebergVolMult { get; set; } = 1.5;             // Multiplicateur volume iceberg
 
         [NinjaScriptProperty]
-        [Display(Name = "Vacuum Energy Min", Description = "Énergie minimum pour signal vacuum (défaut 2.0)", Order = 5, GroupName = "Filtres")]
-        public double VacuumEnergyMin { get; set; } = 2.0;
+        public double VacuumEnergyMin { get; set; } = 2.0;            // Énergie min signal vacuum
 
         [NinjaScriptProperty]
-        [Display(Name = "Log Signaux", Description = "Affiche détails dans Output window (calibration)", Order = 6, GroupName = "Debug")]
-        public bool LogSignals { get; set; } = true;
+        public bool LogSignals { get; set; } = true;                  // Logs dans Output window
         // ─────────────────────────────────────────────────────────
 
         private static readonly HttpClient http = new HttpClient();
