@@ -235,7 +235,7 @@ def _close_trade(symbol, prix_exit, pnl, reason):
     if pnl < 0:
         consecutive_losses += 1
         if consecutive_losses >= 3:
-            pause_until = datetime.utcnow().replace(tzinfo=None) + __import__("datetime").timedelta(minutes=90)
+            pause_until = datetime.utcnow().replace(tzinfo=None) + __import__("datetime").timedelta(minutes=30)
             log.warning(f"3 pertes consécutives — pause jusqu'à {pause_until.strftime('%H:%M')} UTC")
     else:
         consecutive_losses = 0
