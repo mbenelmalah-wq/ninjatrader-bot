@@ -52,6 +52,10 @@ class TrailSL:
 
 active_trails: dict[str, TrailSL] = {}
 
+# ── Cache prix (évite rate limit CoinGecko) ───────────────────────────────────
+_prix_cache: dict[str, tuple[float, float]] = {}  # symbol → (price, timestamp)
+PRIX_CACHE_TTL = 30  # secondes
+
 # ── Helpers API Alpaca ─────────────────────────────────────────────────────────
 def api_call(method, path, payload=None):
     url = BASE_URL + path
@@ -70,6 +74,14 @@ def get_equity():
     return float(acc.get("equity", 100000))
 
 def get_prix(symbol):
+    # Cache 30s — évite rate limit CoinGecko
+    cached = _prix_cache.get(symbol)
+    if cached:
+        price, ts = cached
+        if time.time() - ts < PRIX_CACHE_TTL:
+            log.info(f"  Prix {symbol} depuis cache: ${price}")
+            return price
+
     cg_ids = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana",
               "AVAX": "avalanche-2", "XRP": "ripple", "ADA": "cardano"}
     coin = symbol[:3].upper()
@@ -82,6 +94,7 @@ def get_prix(symbol):
             if r.status_code == 200:
                 price = r.json().get(cg_id, {}).get("usd")
                 if price:
+                    _prix_cache[symbol] = (float(price), time.time())
                     log.info(f"  Prix {symbol} via CoinGecko: ${price}")
                     return float(price)
     except Exception as e:
@@ -93,6 +106,7 @@ def get_prix(symbol):
         r = requests.get(url, timeout=5)
         if r.status_code == 200:
             price = float(r.json()["price"])
+            _prix_cache[symbol] = (price, time.time())
             log.info(f"  Prix {symbol} via Binance: ${price}")
             return price
     except Exception as e:
