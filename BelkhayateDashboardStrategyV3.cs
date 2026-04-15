@@ -1,15 +1,13 @@
 // ═══════════════════════════════════════════════════════════════
 // BelkhayateDashboardStrategyV3.cs — NinjaTrader 8
 //
-// Trois couches de confirmation :
-//   1. Volume Profile → POC (niveau avec le plus de volume)
-//   2. Stacked Imbalances → déséquilibre acheteur/vendeur (footprint)
-//   3. Delta exhaustion → retournement de pression
+// Fusion V2 + Volume Profile POC
+//   - Signaux V2 (breakout / reversal / vacuum / momentum) → flèches
+//   - POC calculé en temps réel → zone de confirmation
+//   - Signal renforcé si prix proche du POC
+//   - Calculate.OnBarClose (stable, compatible tous feeds)
 //
-// Signal BUY  : imbalances haussières OU prix au POC + delta retourne positif
-// Signal SELL : imbalances baissières OU prix au POC + delta retourne négatif
-//
-// Timeframe recommandé : 1 minute — BTC APR26
+// Timeframe : 1 minute — BTC APR26
 // ═══════════════════════════════════════════════════════════════
 
 #region Using declarations
@@ -42,23 +40,23 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         public int CooldownBars { get; set; } = 3;
 
-        // Stacked Imbalances
         [NinjaScriptProperty]
-        public int StackCount { get; set; } = 3;             // niveaux consécutifs déséquilibrés
+        public double DeltaSlopeThreshold { get; set; } = 0.2;   // seuil signal V2
 
         [NinjaScriptProperty]
-        public double ImbalanceRatio { get; set; } = 3.0;    // ratio ask/bid pour imbalance (300%)
-
-        // Volume Profile
-        [NinjaScriptProperty]
-        public int POCProximityTicks { get; set; } = 10;     // distance max au POC pour signal
+        public double IcebergVolMult { get; set; } = 1.5;         // multiplicateur volume iceberg
 
         [NinjaScriptProperty]
-        public int ResetVPHour { get; set; } = 0;            // heure UTC reset volume profile (0 = minuit)
+        public double VacuumEnergyMin { get; set; } = 2.0;        // énergie min vacuum
 
-        // Delta
         [NinjaScriptProperty]
-        public double DeltaThreshold { get; set; } = 1.0;    // seuil delta exhaustion
+        public int POCProximityTicks { get; set; } = 15;          // distance max au POC
+
+        [NinjaScriptProperty]
+        public int ResetVPHour { get; set; } = 0;                 // heure UTC reset volume profile
+
+        [NinjaScriptProperty]
+        public bool RequirePOC { get; set; } = false;             // false = POC optionnel, true = obligatoire
 
         [NinjaScriptProperty]
         public bool LogSignals { get; set; } = true;
@@ -66,136 +64,167 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private static readonly HttpClient http = new HttpClient();
 
-        // Volume Profile (session entière)
-        private Dictionary<double, double> volByPrice    = new Dictionary<double, double>();
-        private Dictionary<double, double> askVolByPrice = new Dictionary<double, double>();
-        private Dictionary<double, double> bidVolByPrice = new Dictionary<double, double>();
+        // Indicateurs V2
+        private EMA emaFast;
+        private EMA emaSlow;
+        private ATR atr;
+        private SMA volMA;
 
-        // Footprint bougie courante
-        private Dictionary<double, double> barAskVol = new Dictionary<double, double>();
-        private Dictionary<double, double> barBidVol = new Dictionary<double, double>();
+        private Series<double> delta;
+        private Series<double> deltaSlope;
+        private Series<double> deltaAbsSeries;
 
-        // Delta
-        private double barDelta  = 0;
-        private double prevDelta = 0;
-
-        // Résultats de la bougie précédente
-        private int    lastBullStack = 0;
-        private int    lastBearStack = 0;
-        private double lastPOC       = 0;
+        // Volume Profile
+        private Dictionary<double, double> volByPrice = new Dictionary<double, double>();
+        private int lastResetDay = -1;
 
         // Contrôle signaux
         private int    lastSignalBar = -99;
         private string lastSide      = "";
         private int    signalsSent   = 0;
-        private int    lastResetDay  = -1;
 
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
             {
-                Name              = "BelkhayateDashboardStrategyV3";
-                Calculate         = Calculate.OnEachTick;
-                IsOverlay         = true;
-                AlpacaSymbol      = "BTCUSD";
-                CooldownBars      = 3;
-                StackCount        = 3;
-                ImbalanceRatio    = 3.0;
-                POCProximityTicks = 10;
-                ResetVPHour       = 0;
-                DeltaThreshold    = 1.0;
-                LogSignals        = true;
+                Name                 = "BelkhayateDashboardStrategyV3";
+                Calculate            = Calculate.OnBarClose;
+                IsOverlay            = true;
+                AlpacaSymbol         = "BTCUSD";
+                CooldownBars         = 3;
+                DeltaSlopeThreshold  = 0.2;
+                IcebergVolMult       = 1.5;
+                VacuumEnergyMin      = 2.0;
+                POCProximityTicks    = 15;
+                ResetVPHour          = 0;
+                RequirePOC           = false;
+                LogSignals           = true;
+            }
+            else if (State == State.DataLoaded)
+            {
+                emaFast = EMA(50);
+                emaSlow = EMA(100);
+                atr     = ATR(14);
+                volMA   = SMA(Volume, 20);
+
+                delta          = new Series<double>(this);
+                deltaSlope     = new Series<double>(this);
+                deltaAbsSeries = new Series<double>(this);
             }
         }
 
-        // ── Collecte tick par tick ─────────────────────────────────
+        // ── Volume Profile (tick par tick) ─────────────────────────
         protected override void OnMarketData(MarketDataEventArgs e)
         {
             if (e.MarketDataType != MarketDataType.Last) return;
 
-            double price = e.Price;
-            double vol   = e.Volume;
-
-            // Volume profile total
-            if (!volByPrice.ContainsKey(price))  volByPrice[price]  = 0;
-            volByPrice[price] += vol;
-
-            // Classification acheteur / vendeur
-            if (e.Price >= e.Ask)
-            {
-                barDelta += vol;
-                if (!askVolByPrice.ContainsKey(price)) askVolByPrice[price] = 0;
-                askVolByPrice[price] += vol;
-                if (!barAskVol.ContainsKey(price))     barAskVol[price]     = 0;
-                barAskVol[price] += vol;
-            }
-            else if (e.Price <= e.Bid)
-            {
-                barDelta -= vol;
-                if (!bidVolByPrice.ContainsKey(price)) bidVolByPrice[price] = 0;
-                bidVolByPrice[price] += vol;
-                if (!barBidVol.ContainsKey(price))     barBidVol[price]     = 0;
-                barBidVol[price] += vol;
-            }
-        }
-
-        // ── Logique principale ─────────────────────────────────────
-        protected override void OnBarUpdate()
-        {
-            if (BarsInProgress != 0) return;
-            if (CurrentBar < 10) return;
-
             // Reset volume profile à l'heure configurée
-            int today = Time[0].DayOfYear;
-            if (today != lastResetDay && Time[0].Hour == ResetVPHour)
+            int today = e.Time.DayOfYear;
+            if (today != lastResetDay && e.Time.Hour == ResetVPHour)
             {
                 volByPrice.Clear();
-                askVolByPrice.Clear();
-                bidVolByPrice.Clear();
                 lastResetDay = today;
-                if (LogSignals) Print($"[V3] Volume Profile réinitialisé — {Time[0]:dd/MM HH:mm}");
+                if (LogSignals) Print($"[V3] Volume Profile reset — {e.Time:dd/MM HH:mm}");
             }
 
-            // Analyse de la bougie qui vient de fermer
-            if (IsFirstTickOfBar)
+            double price = e.Price;
+            if (!volByPrice.ContainsKey(price)) volByPrice[price] = 0;
+            volByPrice[price] += e.Volume;
+        }
+
+        // ── Logique principale (OnBarClose) ────────────────────────
+        protected override void OnBarUpdate()
+        {
+            if (CurrentBar < 100) return;
+
+            // ── Indicateurs V2 ────────────────────────────────────
+            double gravity  = (emaFast[0] + emaSlow[0]) / 2;
+            double range    = High[0] - Low[0];
+            double energy   = atr[0] > 0 ? range / atr[0] : 0;
+            double volNorm  = Volume[0] / volMA[0];
+
+            delta[0]           = (Close[0] - Open[0]) * Volume[0];
+            double deltaFast   = EMA(delta, 5)[0];
+            deltaAbsSeries[0]  = Math.Abs(delta[0]);
+            double deltaAbs    = EMA(deltaAbsSeries, 20)[0];
+            deltaSlope[0]      = deltaAbs > 0 ? deltaFast / deltaAbs : 0;
+
+            bool trendUp     = Close[0] > emaSlow[0];
+            bool trendDown   = Close[0] < emaSlow[0];
+            bool expansion   = energy > 1.0;
+            bool compression = energy < 0.8;
+
+            bool breakoutBuy  = Close[0] > MAX(High, 15)[1];
+            bool breakoutSell = Close[0] < MIN(Low, 15)[1];
+
+            bool iceberg     = Volume[0] > volMA[0] * IcebergVolMult
+                            && Math.Abs(Close[0] - Open[0]) < atr[0] * 0.3;
+            bool icebergBuy  = iceberg && Close[0] > gravity;
+            bool icebergSell = iceberg && Close[0] < gravity;
+
+            bool vacuumBuy  = energy > VacuumEnergyMin && volNorm > 1.5 && Close[0] > gravity;
+            bool vacuumSell = energy > VacuumEnergyMin && volNorm > 1.5 && Close[0] < gravity;
+
+            bool breakoutSignalBuy  = breakoutBuy  && expansion   && deltaSlope[0] >  DeltaSlopeThreshold;
+            bool breakoutSignalSell = breakoutSell && expansion   && deltaSlope[0] < -DeltaSlopeThreshold;
+            bool reversalBuy        = icebergBuy   && compression && deltaSlope[0] >  0;
+            bool reversalSell       = icebergSell  && compression && deltaSlope[0] <  0;
+            bool vacuumSignalBuy    = vacuumBuy    && expansion;
+            bool vacuumSignalSell   = vacuumSell   && expansion;
+            bool momentumBuy        = deltaSlope[0] >  DeltaSlopeThreshold && Close[0] > gravity;
+            bool momentumSell       = deltaSlope[0] < -DeltaSlopeThreshold && Close[0] < gravity;
+
+            bool v2Buy  = (breakoutSignalBuy  || reversalBuy  || vacuumSignalBuy  || momentumBuy)  && trendUp;
+            bool v2Sell = (breakoutSignalSell || reversalSell || vacuumSignalSell || momentumSell) && trendDown;
+
+            // ── Volume Profile POC ────────────────────────────────
+            double poc        = GetPOC();
+            double proximity  = POCProximityTicks * TickSize;
+            bool   nearPOC    = poc > 0 && Math.Abs(Close[0] - poc) <= proximity;
+            bool   pocBuy     = nearPOC && Close[0] >= poc;
+            bool   pocSell    = nearPOC && Close[0] <  poc;
+
+            // ── Signal final ──────────────────────────────────────
+            bool buySignal;
+            bool sellSignal;
+
+            if (RequirePOC)
             {
-                lastBullStack = CountStackedImbalances(barAskVol, barBidVol, true);
-                lastBearStack = CountStackedImbalances(barAskVol, barBidVol, false);
-                lastPOC       = GetPOC();
-                prevDelta     = barDelta;
-                barDelta      = 0;
-                barAskVol.Clear();
-                barBidVol.Clear();
-
-                if (LogSignals)
-                    Print($"[V3] Bar {CurrentBar - 1} | POC={lastPOC:F0} | BullStack={lastBullStack} BearStack={lastBearStack} | delta={prevDelta:F1}");
+                // Mode strict : signal V2 ET proche du POC
+                buySignal  = v2Buy  && pocBuy;
+                sellSignal = v2Sell && pocSell;
             }
-
-            // Cooldown
-            if (CurrentBar - lastSignalBar < CooldownBars) return;
-
-            // ── Conditions ────────────────────────────────────────
-            double poc          = lastPOC;
-            double proximity    = POCProximityTicks * TickSize;
-            bool   nearPOC      = poc > 0 && Math.Abs(Close[0] - poc) <= proximity;
-            bool   abovePOC     = nearPOC && Close[0] >= poc;
-            bool   belowPOC     = nearPOC && Close[0] <  poc;
-
-            bool   bullImbalance = lastBullStack >= StackCount;
-            bool   bearImbalance = lastBearStack >= StackCount;
-
-            bool   deltaReturnBuy  = prevDelta <= -DeltaThreshold && barDelta > 0;
-            bool   deltaReturnSell = prevDelta >=  DeltaThreshold && barDelta < 0;
-
-            // Signal = (imbalance OU POC) ET delta retournement
-            bool buySignal  = (bullImbalance || abovePOC) && deltaReturnBuy;
-            bool sellSignal = (bearImbalance || belowPOC) && deltaReturnSell;
+            else
+            {
+                // Mode normal : signal V2 (POC renforce mais pas obligatoire)
+                buySignal  = v2Buy;
+                sellSignal = v2Sell;
+            }
 
             // ── Flèches ───────────────────────────────────────────
-            if (buySignal)
-                Draw.ArrowUp(this,   "BUY"  + CurrentBar, true, 0, Low[0]  - TickSize * 3, Brushes.Lime);
-            if (sellSignal)
-                Draw.ArrowDown(this, "SELL" + CurrentBar, true, 0, High[0] + TickSize * 3, Brushes.Red);
+            if (v2Buy)
+            {
+                Brush color = nearPOC ? Brushes.Cyan : Brushes.Lime;  // cyan = signal POC renforcé
+                Draw.ArrowUp(this, "BUY" + CurrentBar, true, 0, Low[0] - TickSize * 3, color);
+            }
+            if (v2Sell)
+            {
+                Brush color = nearPOC ? Brushes.Yellow : Brushes.Red;
+                Draw.ArrowDown(this, "SELL" + CurrentBar, true, 0, High[0] + TickSize * 3, color);
+            }
+
+            // ── Log ───────────────────────────────────────────────
+            if (LogSignals && (v2Buy || v2Sell))
+            {
+                string type = breakoutSignalBuy || breakoutSignalSell ? "BREAKOUT"
+                            : reversalBuy       || reversalSell       ? "REVERSAL"
+                            : vacuumSignalBuy   || vacuumSignalSell   ? "VACUUM"
+                            : "MOMENTUM";
+                Print($"[V3] {(v2Buy ? "▲ BUY" : "▼ SELL")} [{type}] pocProx={nearPOC} poc={poc:F0} delta={deltaSlope[0]:F3} @ {Close[0]:F2}");
+            }
+
+            // ── Cooldown ──────────────────────────────────────────
+            if (CurrentBar - lastSignalBar < CooldownBars) return;
 
             // ── Envoi webhook ─────────────────────────────────────
             if (buySignal && lastSide != "buy")
@@ -203,8 +232,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 lastSide      = "buy";
                 lastSignalBar = CurrentBar;
                 signalsSent++;
-                string reason = bullImbalance ? "IMBALANCE" : "POC";
-                Print($"[V3] ▲ BUY #{signalsSent} [{reason}] | stack={lastBullStack} poc={poc:F0} delta={prevDelta:F1} @ {Close[0]:F2}");
+                Print($"[V3] ▲ BUY #{signalsSent} envoyé | poc={nearPOC} @ {Close[0]:F2}");
                 SendWebhook("buy");
             }
             else if (sellSignal && lastSide != "sell")
@@ -212,37 +240,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 lastSide      = "sell";
                 lastSignalBar = CurrentBar;
                 signalsSent++;
-                string reason = bearImbalance ? "IMBALANCE" : "POC";
-                Print($"[V3] ▼ SELL #{signalsSent} [{reason}] | stack={lastBearStack} poc={poc:F0} delta={prevDelta:F1} @ {Close[0]:F2}");
+                Print($"[V3] ▼ SELL #{signalsSent} envoyé | poc={nearPOC} @ {Close[0]:F2}");
                 SendWebhook("sell");
             }
-        }
-
-        // ── Calcul stacked imbalances ──────────────────────────────
-        private int CountStackedImbalances(
-            Dictionary<double, double> askVol,
-            Dictionary<double, double> bidVol,
-            bool bullish)
-        {
-            if (askVol.Count == 0 && bidVol.Count == 0) return 0;
-
-            var prices = askVol.Keys.Union(bidVol.Keys).OrderBy(p => p).ToList();
-            int maxStack     = 0;
-            int currentStack = 0;
-
-            foreach (double price in prices)
-            {
-                double ask = askVol.ContainsKey(price) ? askVol[price] : 0.001;
-                double bid = bidVol.ContainsKey(price) ? bidVol[price] : 0.001;
-
-                bool imbalanced = bullish
-                    ? (ask / bid >= ImbalanceRatio)   // acheteurs dominent
-                    : (bid / ask >= ImbalanceRatio);  // vendeurs dominent
-
-                if (imbalanced) { currentStack++; maxStack = Math.Max(maxStack, currentStack); }
-                else            { currentStack = 0; }
-            }
-            return maxStack;
         }
 
         // ── POC = prix avec le plus de volume ─────────────────────
@@ -252,7 +252,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             return volByPrice.OrderByDescending(kv => kv.Value).First().Key;
         }
 
-        // ── Envoi webhook ──────────────────────────────────────────
+        // ── Webhook ────────────────────────────────────────────────
         private void SendWebhook(string side)
         {
             string payload = "{\"token\":\"" + WEBHOOK_TOKEN
