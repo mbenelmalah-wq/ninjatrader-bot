@@ -70,17 +70,34 @@ def get_equity():
     return float(acc.get("equity", 100000))
 
 def get_prix(symbol):
-    sym = symbol.replace("/", "")
+    cg_ids = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana",
+              "AVAX": "avalanche-2", "XRP": "ripple", "ADA": "cardano"}
+    coin = symbol[:3].upper()
+    # Source 1 : CoinGecko (public, sans auth)
     try:
-        url = f"https://data.alpaca.markets/v1beta3/crypto/us/latest/quotes?symbols={sym}/USD"
-        r = requests.get(url, headers=HEADERS, timeout=5).json()
-        q = r.get("quotes", {}).get(f"{sym}/USD", {})
-        bp = q.get("bp", 0)
-        ap = q.get("ap", 0)
-        if bp and ap:
-            return (bp + ap) / 2
-    except:
-        pass
+        cg_id = cg_ids.get(coin)
+        if cg_id:
+            url = f"https://api.coingecko.com/api/v3/simple/price?ids={cg_id}&vs_currencies=usd"
+            r = requests.get(url, timeout=8)
+            if r.status_code == 200:
+                price = r.json().get(cg_id, {}).get("usd")
+                if price:
+                    log.info(f"  Prix {symbol} via CoinGecko: ${price}")
+                    return float(price)
+    except Exception as e:
+        log.warning(f"CoinGecko échoué: {e}")
+    # Source 2 : Binance public (fallback)
+    try:
+        pair = coin + "USDT"
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={pair}"
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            price = float(r.json()["price"])
+            log.info(f"  Prix {symbol} via Binance: ${price}")
+            return price
+    except Exception as e:
+        log.warning(f"Binance échoué: {e}")
+    log.error(f"Impossible d'obtenir le prix pour {symbol}")
     return None
 
 def normalize_symbol(raw):
