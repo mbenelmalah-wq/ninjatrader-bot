@@ -551,7 +551,7 @@ def dashboard():
             idx = len(trades_paired)
             if sym not in buys_pending:
                 buys_pending[sym] = []
-            buys_pending[sym].append({"price": prix, "qty": qty, "heure": heure, "idx": idx})
+            buys_pending[sym].append({"price": prix, "qty": qty, "orig_qty": qty, "heure": heure, "idx": idx})
             trades_paired.append({"sym": sym, "side": "BUY", "entry": prix,
                                    "exit": None, "pnl": None, "time": t_str, "heure": heure})
 
@@ -564,12 +564,14 @@ def dashboard():
                 closed = min(buy["qty"], remaining)
                 pnl    = round((prix - buy["price"]) * closed, 2)
                 t      = trades_paired[buy["idx"]]
-                t["exit"]      = prix
                 t["pnl"]       = (t["pnl"] or 0) + pnl
+                t["exit_tmp"]  = prix
                 t["exit_time"] = heure
                 remaining     -= closed
                 buy["qty"]    -= closed
-                if buy["qty"] <= 0.00001:
+                # Marquer comme fermé seulement si 95%+ de la qty est consommée
+                if buy["qty"] <= buy["orig_qty"] * 0.05:
+                    t["exit"] = prix
                     buys_pending[sym].remove(buy)
 
     trades_html = ""
@@ -578,7 +580,8 @@ def dashboard():
         is_closed = t.get("exit") is not None
         sc        = "#ff5252" if is_closed else "#00e676"
         arrow     = "▼ SELL"  if is_closed else "▲ BUY"
-        exit_str  = f"${t['exit']:,.1f}" if is_closed else '<span style="color:#f0883e">En cours</span>'
+        exit_price = t.get("exit") or t.get("exit_tmp")
+        exit_str  = f"${exit_price:,.1f}" if exit_price else '<span style="color:#f0883e">En cours</span>'
         if pnl is not None:
             pc      = "#00e676" if pnl >= 0 else "#ff5252"
             pnl_str = f'<span style="color:{pc}">{"+$" if pnl>=0 else "-$"}{abs(pnl):.2f}</span>'
