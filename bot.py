@@ -528,8 +528,7 @@ def dashboard():
             </div>
         </div>"""
 
-    # Historique — appariement BUY/SELL depuis Alpaca pour P&L réel
-    # direction=desc → 100 derniers ordres, puis on inverse pour apparier chronologiquement
+    # Historique — appariement BUY/SELL par quantité la plus proche (évite erreurs FIFO multi-positions)
     orders_raw = api_call("GET", "/orders?status=closed&limit=200&direction=desc")
     orders     = orders_raw if isinstance(orders_raw, list) else []
     filled     = sorted(
@@ -537,8 +536,10 @@ def dashboard():
         key=lambda o: o.get("filled_at", "")
     )
 
-    buys_pending  = {}
+    # Indexer les BUY par symbole avec leur index dans trades_paired
+    buys_pending  = {}   # sym → [{"price", "qty", "idx"}]
     trades_paired = []
+
     for o in filled:
         sym   = o.get("symbol", "").replace("/", "")
         side  = o.get("side", "")
@@ -546,23 +547,26 @@ def dashboard():
         qty   = float(o.get("filled_qty") or 0)
         t_str = o.get("filled_at", "")[:16].replace("T", " ")
         heure = t_str[11:16]
+
         if side == "buy":
+            idx = len(trades_paired)
             if sym not in buys_pending: buys_pending[sym] = []
-            buys_pending[sym].append({"price": prix, "qty": qty, "time": t_str, "heure": heure})
+            buys_pending[sym].append({"price": prix, "qty": qty, "heure": heure, "idx": idx})
             trades_paired.append({"sym": sym, "side": "BUY", "entry": prix,
                                    "exit": None, "pnl": None, "time": t_str, "heure": heure})
+
         elif side == "sell":
-            if buys_pending.get(sym):
-                buy = buys_pending[sym].pop(0)
-                pnl = round((prix - buy["price"]) * buy["qty"], 2)
-                for tp in reversed(trades_paired):
-                    if tp["sym"] == sym and tp["pnl"] is None and tp["side"] == "BUY":
-                        tp["exit"]  = prix
-                        tp["pnl"]   = pnl
-                        tp["exit_time"] = heure
-                        break
+            candidates = buys_pending.get(sym, [])
+            if candidates:
+                # Choisir le BUY dont la quantité est la plus proche du SELL
+                best = min(candidates, key=lambda b: abs(b["qty"] - qty))
+                candidates.remove(best)
+                pnl = round((prix - best["price"]) * best["qty"], 2)
+                trades_paired[best["idx"]]["exit"]      = prix
+                trades_paired[best["idx"]]["pnl"]       = pnl
+                trades_paired[best["idx"]]["exit_time"] = heure
             else:
-                # SELL sans BUY correspondant (fermeture manuelle ou recover)
+                # SELL orphelin — affiché séparément
                 trades_paired.append({"sym": sym, "side": "SELL", "entry": prix,
                                        "exit": None, "pnl": None, "time": t_str, "heure": heure})
 
