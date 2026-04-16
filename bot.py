@@ -572,12 +572,14 @@ def dashboard():
 
     trades_html = ""
     for t in reversed(trades_paired[-30:]):
-        pnl  = t.get("pnl")
-        side = t.get("side", "BUY")
-        side_color = "#00e676" if side == "BUY" else "#ff5252"
-        side_arrow = "▲ BUY" if side == "BUY" else "▼ SELL"
-        entry_str  = f"${t['entry']:,.1f}"
-        if t.get("exit"):
+        pnl       = t.get("pnl")
+        is_closed = t.get("exit") is not None
+        # Trade fermé → afficher SELL (dernière action), ouvert → BUY
+        display_side  = "SELL" if is_closed else "BUY"
+        side_color    = "#ff5252" if is_closed else "#00e676"
+        side_arrow    = "▼ SELL" if is_closed else "▲ BUY"
+        entry_str     = f"${t['entry']:,.1f}"
+        if is_closed:
             exit_str = f"${t['exit']:,.1f}"
         else:
             exit_str = f'<span style="color:#f0883e">En cours</span>'
