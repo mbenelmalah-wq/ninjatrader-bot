@@ -127,6 +127,32 @@ def normalize_symbol(raw):
     }
     return mapping.get(raw, raw)
 
+def get_ema114(symbol):
+    """EMA 114 sur 1min Binance — slope > 0 = haussier, < 0 = baissier, ~0 = aplati."""
+    coin = symbol[:3].upper()
+    pair = coin + "USDT"
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval=1m&limit=200"
+        r   = requests.get(url, timeout=8)
+        if r.status_code != 200:
+            return None, None
+        closes  = [float(c[4]) for c in r.json()]
+        period  = 114
+        k       = 2 / (period + 1)
+        ema     = sum(closes[:period]) / period
+        for p in closes[period:]:
+            ema = p * k + ema * (1 - k)
+        ema_prev = sum(closes[:period]) / period
+        for p in closes[period:-5]:
+            ema_prev = p * k + ema_prev * (1 - k)
+        slope = (ema - ema_prev) / ema * 100
+        return ema, slope
+    except Exception as e:
+        log.warning(f"EMA114 erreur {symbol}: {e}")
+        return None, None
+
+SLOPE_THRESHOLD = 0.003  # % — en dessous = aplati
+
 def is_asian_session():
     cfg = config["sessions"]
     if not cfg.get("block_asian_session", False):
@@ -271,6 +297,17 @@ def webhook():
         if is_asian_session():
             log.info("Session asiatique — signal ignoré")
             return jsonify({"status": "asian_session_blocked"})
+
+        # Filtre EMA 114 Belkhayate — bloque BUY si tendance baissière ou aplatie
+        if side == "buy":
+            ema114, slope = get_ema114(symbol)
+            if ema114 is not None:
+                if abs(slope) < SLOPE_THRESHOLD:
+                    log.info(f"  EMA114 aplatie ({slope:.4f}%) — BUY bloqué")
+                    return jsonify({"status": "ema114_flat", "slope": slope})
+                if slope < 0:
+                    log.info(f"  EMA114 baissière ({slope:.4f}%) — BUY bloqué")
+                    return jsonify({"status": "ema114_bearish", "slope": slope})
 
         # Pause pertes consécutives
         if pause_until and datetime.utcnow() < pause_until:
