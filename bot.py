@@ -529,9 +529,13 @@ def dashboard():
         </div>"""
 
     # Historique — appariement BUY/SELL depuis Alpaca pour P&L réel
-    orders_raw = api_call("GET", "/orders?status=closed&limit=100&direction=asc")
+    # direction=desc → 100 derniers ordres, puis on inverse pour apparier chronologiquement
+    orders_raw = api_call("GET", "/orders?status=closed&limit=200&direction=desc")
     orders     = orders_raw if isinstance(orders_raw, list) else []
-    filled     = [o for o in orders if o.get("status") == "filled"]
+    filled     = sorted(
+        [o for o in orders if o.get("status") == "filled"],
+        key=lambda o: o.get("filled_at", "")
+    )
 
     buys_pending  = {}
     trades_paired = []
@@ -541,33 +545,52 @@ def dashboard():
         prix  = float(o.get("filled_avg_price") or 0)
         qty   = float(o.get("filled_qty") or 0)
         t_str = o.get("filled_at", "")[:16].replace("T", " ")
+        heure = t_str[11:16]
         if side == "buy":
             if sym not in buys_pending: buys_pending[sym] = []
-            buys_pending[sym].append({"price": prix, "qty": qty})
+            buys_pending[sym].append({"price": prix, "qty": qty, "time": t_str, "heure": heure})
             trades_paired.append({"sym": sym, "side": "BUY", "entry": prix,
-                                   "pnl": None, "time": t_str})
-        elif side == "sell" and buys_pending.get(sym):
-            buy = buys_pending[sym].pop(0)
-            pnl = round((prix - buy["price"]) * buy["qty"], 2)
-            for tp in reversed(trades_paired):
-                if tp["sym"] == sym and tp["pnl"] is None:
-                    tp["pnl"] = pnl
-                    break
+                                   "exit": None, "pnl": None, "time": t_str, "heure": heure})
+        elif side == "sell":
+            if buys_pending.get(sym):
+                buy = buys_pending[sym].pop(0)
+                pnl = round((prix - buy["price"]) * buy["qty"], 2)
+                for tp in reversed(trades_paired):
+                    if tp["sym"] == sym and tp["pnl"] is None and tp["side"] == "BUY":
+                        tp["exit"]  = prix
+                        tp["pnl"]   = pnl
+                        tp["exit_time"] = heure
+                        break
+            else:
+                # SELL sans BUY correspondant (fermeture manuelle ou recover)
+                trades_paired.append({"sym": sym, "side": "SELL", "entry": prix,
+                                       "exit": None, "pnl": None, "time": t_str, "heure": heure})
 
     trades_html = ""
-    for t in reversed(trades_paired[-20:]):
-        pnl = t.get("pnl")
+    for t in reversed(trades_paired[-30:]):
+        pnl  = t.get("pnl")
+        side = t.get("side", "BUY")
+        side_color = "#00e676" if side == "BUY" else "#ff5252"
+        side_arrow = "▲ BUY" if side == "BUY" else "▼ SELL"
+        entry_str  = f"${t['entry']:,.1f}"
+        if t.get("exit"):
+            exit_str = f"${t['exit']:,.1f}"
+        else:
+            exit_str = f'<span style="color:#f0883e">En cours</span>'
         if pnl is not None:
             pc      = "#00e676" if pnl >= 0 else "#ff5252"
             pnl_str = f'<span style="color:{pc}">{"+$" if pnl>=0 else "-$"}{abs(pnl):.2f}</span>'
         else:
-            pnl_str = '<span style="color:#f0883e">En cours</span>'
+            pnl_str = '<span style="color:#f0883e">—</span>'
+        exit_time = t.get("exit_time", "")
+        time_str  = f'{t["heure"]}{"→"+exit_time if exit_time else ""}'
         trades_html += f"""
         <tr>
-            <td>{t["time"][11:16]}</td>
+            <td><small>{time_str}</small></td>
             <td>{t["sym"]}</td>
-            <td style="color:#00e676">▲ BUY</td>
-            <td>${t["entry"]:,.1f}</td>
+            <td style="color:{side_color}">{side_arrow}</td>
+            <td>{entry_str}</td>
+            <td>{exit_str}</td>
             <td>{pnl_str}</td>
         </tr>"""
 
@@ -640,8 +663,8 @@ def dashboard():
 <h2>Derniers trades ({len(trades)})</h2>
 <div style="overflow-x:auto">
 <table>
-  <tr><th>Heure</th><th>Sym</th><th>Side</th><th>Entrée</th><th>P&L</th></tr>
-  {trades_html if trades_html else '<tr><td colspan="5" style="text-align:center;color:#8b949e;padding:20px">En attente des signaux Belkhayate...</td></tr>'}
+  <tr><th>Heure</th><th>Sym</th><th>Side</th><th>Entrée</th><th>Sortie</th><th>P&L</th></tr>
+  {trades_html if trades_html else '<tr><td colspan="6" style="text-align:center;color:#8b949e;padding:20px">En attente des signaux Belkhayate...</td></tr>'}
 </table>
 </div>
 <p style="text-align:center;color:#8b949e;font-size:.7rem;margin-top:12px">Refresh auto 15s — Belkhayate Orderflow → BTCUSD Alpaca</p>
