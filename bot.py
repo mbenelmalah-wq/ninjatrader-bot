@@ -368,6 +368,43 @@ def webhook():
         log.error(f"Webhook error: {e}")
         return jsonify({"error": str(e)}), 500
 
+# ── Recover trails manquants ──────────────────────────────────────────────────
+@app.route("/recover")
+def recover():
+    """Reconstruit les trails manquants depuis les positions Alpaca ouvertes."""
+    try:
+        pos_list = api_call("GET", "/positions")
+        if not isinstance(pos_list, list):
+            return jsonify({"error": "impossible de lire les positions"}), 500
+        recovered = []
+        for p in pos_list:
+            sym   = p["symbol"].replace("/", "")
+            if sym in active_trails:
+                continue
+            entry  = float(p["avg_entry_price"])
+            sym_key = f"money_management_{sym.upper()}"
+            mm = config.get(sym_key, config["money_management_default"])
+            sl_pct   = mm["trailing_sl_pct"]
+            tp_pct   = mm["take_profit_pct"]
+            trig_pct = mm["profit_trigger_pct"]
+            step_pct = mm["trail_step_pct"]
+            mise     = abs(float(p["market_value"]))
+            active_trails[sym] = TrailSL(
+                symbol=sym, entry=entry, side="buy",
+                sl=round(entry * (1 - sl_pct), 2),
+                tp=round(entry * (1 + tp_pct), 2),
+                mise=mise,
+                palier=round(entry * (1 + trig_pct), 2),
+                step=step_pct
+            )
+            recovered.append({"symbol": sym, "entry": entry,
+                               "sl": active_trails[sym].sl,
+                               "tp": active_trails[sym].tp})
+            log.info(f"  RECOVER {sym} entry={entry:.2f} SL={active_trails[sym].sl:.2f} TP={active_trails[sym].tp:.2f}")
+        return jsonify({"status": "ok", "recovered": recovered})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # ── Status JSON ───────────────────────────────────────────────────────────────
 @app.route("/status")
 def status():
