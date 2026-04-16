@@ -26,7 +26,7 @@ HEADERS = {
 }
 
 MAX_POSITIONS = 5
-COOLDOWN_MIN  = 1
+COOLDOWN_MIN  = 0
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
