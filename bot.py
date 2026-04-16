@@ -56,7 +56,7 @@ active_trails: dict[str, TrailSL] = {}
 
 # ── Cache prix (évite rate limit CoinGecko) ───────────────────────────────────
 _prix_cache: dict[str, tuple[float, float]] = {}  # symbol → (price, timestamp)
-PRIX_CACHE_TTL = 5   # secondes
+PRIX_CACHE_TTL = 2   # secondes
 
 # ── Helpers API Alpaca ─────────────────────────────────────────────────────────
 def api_call(method, path, payload=None):
@@ -246,7 +246,7 @@ def monitor_loop():
 
         except Exception as e:
             log.error(f"Monitor error: {e}")
-        time.sleep(10)
+        time.sleep(5)
 
 def _close_trade(symbol, prix_exit, pnl, reason):
     global consecutive_losses, pause_until
