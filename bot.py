@@ -482,20 +482,45 @@ def dashboard():
             </div>
         </div>"""
 
-    # Historique
+    # Historique — appariement BUY/SELL depuis Alpaca pour P&L réel
+    orders_raw = api_call("GET", "/orders?status=closed&limit=100&direction=asc")
+    orders     = orders_raw if isinstance(orders_raw, list) else []
+    filled     = [o for o in orders if o.get("status") == "filled"]
+
+    buys_pending  = {}
+    trades_paired = []
+    for o in filled:
+        sym   = o.get("symbol", "").replace("/", "")
+        side  = o.get("side", "")
+        prix  = float(o.get("filled_avg_price") or 0)
+        qty   = float(o.get("filled_qty") or 0)
+        t_str = o.get("filled_at", "")[:16].replace("T", " ")
+        if side == "buy":
+            if sym not in buys_pending: buys_pending[sym] = []
+            buys_pending[sym].append({"price": prix, "qty": qty})
+            trades_paired.append({"sym": sym, "side": "BUY", "entry": prix,
+                                   "pnl": None, "time": t_str})
+        elif side == "sell" and buys_pending.get(sym):
+            buy = buys_pending[sym].pop(0)
+            pnl = round((prix - buy["price"]) * buy["qty"], 2)
+            for tp in reversed(trades_paired):
+                if tp["sym"] == sym and tp["pnl"] is None:
+                    tp["pnl"] = pnl
+                    break
+
     trades_html = ""
-    for t in reversed(trades[-20:]):
+    for t in reversed(trades_paired[-20:]):
         pnl = t.get("pnl")
         if pnl is not None:
-            pc = "#00e676" if pnl >= 0 else "#ff5252"
+            pc      = "#00e676" if pnl >= 0 else "#ff5252"
             pnl_str = f'<span style="color:{pc}">{"+$" if pnl>=0 else "-$"}{abs(pnl):.2f}</span>'
         else:
             pnl_str = '<span style="color:#f0883e">En cours</span>'
         trades_html += f"""
         <tr>
             <td>{t["time"][11:16]}</td>
-            <td>{t["symbol"]}</td>
-            <td style="color:{'#00e676' if t['side']=='buy' else '#ff5252'}">{'▲ BUY' if t['side']=='buy' else '▼ SELL'}</td>
+            <td>{t["sym"]}</td>
+            <td style="color:#00e676">▲ BUY</td>
             <td>${t["entry"]:,.1f}</td>
             <td>{pnl_str}</td>
         </tr>"""
