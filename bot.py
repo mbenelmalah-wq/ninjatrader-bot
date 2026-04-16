@@ -315,10 +315,19 @@ def webhook():
             log.info(f"Pause pertes — encore {reste} min")
             return jsonify({"status": "pause_pertes", "minutes_restantes": reste})
 
-        # SELL ignoré — sortie gérée uniquement par le Trailing SL
+        # SELL — ferme la position si elle existe (signal Belkhayate baissier)
         if side == "sell":
-            log.info(f"SELL ignoré — sortie gérée par Trailing SL ({symbol})")
-            return jsonify({"status": "sell_ignored_trailing_sl_manages_exit"})
+            if symbol not in active_trails:
+                log.info(f"SELL {symbol} — aucune position ouverte, ignoré")
+                return jsonify({"status": "no_position_to_close"})
+            trail = active_trails[symbol]
+            prix  = get_prix(symbol) or trail.entry
+            api_call("DELETE", f"/positions/{symbol}")
+            pnl = round((prix - trail.entry) / trail.entry * trail.mise, 2)
+            _close_trade(symbol, prix, pnl, "SIGNAL_SELL")
+            active_trails.pop(symbol, None)
+            log.info(f"SELL {symbol} exécuté @ {prix:.2f} | PnL={pnl:+.2f}$")
+            return jsonify({"status": "position_closed", "symbol": symbol, "pnl": pnl})
 
         # BUY
         if not check_cooldown(symbol):
