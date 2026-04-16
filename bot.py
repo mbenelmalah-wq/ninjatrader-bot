@@ -26,7 +26,7 @@ HEADERS = {
 }
 
 MAX_POSITIONS = 5
-COOLDOWN_MIN  = 0
+COOLDOWN_MIN  = 5
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -326,6 +326,7 @@ def webhook():
             pnl = round((prix - trail.entry) / trail.entry * trail.mise, 2)
             _close_trade(symbol, prix, pnl, "SIGNAL_SELL")
             active_trails.pop(symbol, None)
+            cooldown_last[symbol] = datetime.utcnow()   # bloque nouveau BUY pendant 5 min
             log.info(f"SELL {symbol} exécuté @ {prix:.2f} | PnL={pnl:+.2f}$")
             return jsonify({"status": "position_closed", "symbol": symbol, "pnl": pnl})
 
