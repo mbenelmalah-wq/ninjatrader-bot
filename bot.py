@@ -528,76 +528,37 @@ def dashboard():
             </div>
         </div>"""
 
-    # Historique — appariement BUY/SELL par quantité la plus proche (évite erreurs FIFO multi-positions)
+    # Historique — chaque ordre affiché individuellement (BUY vert / SELL rouge)
+    # Pas d'appariement : un SELL peut fermer plusieurs BUY simultanément
     orders_raw = api_call("GET", "/orders?status=closed&limit=200&direction=desc")
     orders     = orders_raw if isinstance(orders_raw, list) else []
-    filled     = sorted(
-        [o for o in orders if o.get("status") == "filled"],
-        key=lambda o: o.get("filled_at", "")
-    )
-
-    # Indexer les BUY par symbole avec leur index dans trades_paired
-    buys_pending  = {}   # sym → [{"price", "qty", "idx"}]
-    trades_paired = []
-
-    for o in filled:
-        sym   = o.get("symbol", "").replace("/", "")
-        side  = o.get("side", "")
-        prix  = float(o.get("filled_avg_price") or 0)
-        qty   = float(o.get("filled_qty") or 0)
-        t_str = o.get("filled_at", "")[:16].replace("T", " ")
-        heure = t_str[11:16]
-
-        if side == "buy":
-            idx = len(trades_paired)
-            if sym not in buys_pending: buys_pending[sym] = []
-            buys_pending[sym].append({"price": prix, "qty": qty, "heure": heure, "idx": idx})
-            trades_paired.append({"sym": sym, "side": "BUY", "entry": prix,
-                                   "exit": None, "pnl": None, "time": t_str, "heure": heure})
-
-        elif side == "sell":
-            candidates = buys_pending.get(sym, [])
-            if candidates:
-                # Choisir le BUY dont la quantité est la plus proche du SELL
-                best = min(candidates, key=lambda b: abs(b["qty"] - qty))
-                candidates.remove(best)
-                pnl = round((prix - best["price"]) * best["qty"], 2)
-                trades_paired[best["idx"]]["exit"]      = prix
-                trades_paired[best["idx"]]["pnl"]       = pnl
-                trades_paired[best["idx"]]["exit_time"] = heure
-            else:
-                # SELL orphelin — affiché séparément
-                trades_paired.append({"sym": sym, "side": "SELL", "entry": prix,
-                                       "exit": None, "pnl": None, "time": t_str, "heure": heure})
+    filled     = [o for o in orders if o.get("status") == "filled"]
+    # Tri décroissant (plus récent en premier) — déjà desc depuis Alpaca
+    filled_sorted = sorted(filled, key=lambda o: o.get("filled_at", ""), reverse=True)
 
     trades_html = ""
-    for t in reversed(trades_paired[-30:]):
-        pnl       = t.get("pnl")
-        is_closed = t.get("exit") is not None
-        # Trade fermé → afficher SELL (dernière action), ouvert → BUY
-        display_side  = "SELL" if is_closed else "BUY"
-        side_color    = "#ff5252" if is_closed else "#00e676"
-        side_arrow    = "▼ SELL" if is_closed else "▲ BUY"
-        entry_str     = f"${t['entry']:,.1f}"
-        if is_closed:
-            exit_str = f"${t['exit']:,.1f}"
-        else:
-            exit_str = f'<span style="color:#f0883e">En cours</span>'
-        if pnl is not None:
-            pc      = "#00e676" if pnl >= 0 else "#ff5252"
-            pnl_str = f'<span style="color:{pc}">{"+$" if pnl>=0 else "-$"}{abs(pnl):.2f}</span>'
-        else:
-            pnl_str = '<span style="color:#f0883e">—</span>'
-        exit_time = t.get("exit_time", "")
-        time_str  = f'{t["heure"]}{"→"+exit_time if exit_time else ""}'
+    for o in filled_sorted[:40]:
+        sym    = o.get("symbol", "").replace("/", "")
+        side   = o.get("side", "")
+        prix   = float(o.get("filled_avg_price") or 0)
+        qty    = float(o.get("filled_qty") or 0)
+        t_str  = o.get("filled_at", "")[:16].replace("T", " ")
+        heure  = t_str[11:16]
+        is_buy = side == "buy"
+        sc     = "#00e676" if is_buy else "#ff5252"
+        arrow  = "▲ BUY"  if is_buy else "▼ SELL"
+        # Montant cash : négatif pour BUY (dépense), positif pour SELL (recette)
+        cash   = prix * qty
+        cash_c = "#ff5252" if is_buy else "#00e676"
+        cash_s = f'-${cash:,.2f}' if is_buy else f'+${cash:,.2f}'
         trades_html += f"""
         <tr>
-            <td><small>{time_str}</small></td>
-            <td>{t["sym"]}</td>
-            <td style="color:{side_color}">{side_arrow}</td>
-            <td>{entry_str}</td>
-            <td>{exit_str}</td>
-            <td>{pnl_str}</td>
+            <td><small>{heure}</small></td>
+            <td>{sym}</td>
+            <td style="color:{sc}">{arrow}</td>
+            <td>${prix:,.1f}</td>
+            <td>{qty:.4f}</td>
+            <td style="color:{cash_c}">{cash_s}</td>
         </tr>"""
 
     session_banner = f'<div style="background:#ff525211;border:1px solid #ff525233;border-radius:8px;padding:8px;text-align:center;color:#ff5252;font-size:.8rem;margin-bottom:12px">⏸ Session asiatique active — signaux bloqués jusqu\'à 08:00 UTC</div>' if asian else ""
@@ -669,7 +630,7 @@ def dashboard():
 <h2>Derniers trades ({len(trades)})</h2>
 <div style="overflow-x:auto">
 <table>
-  <tr><th>Heure</th><th>Sym</th><th>Side</th><th>Entrée</th><th>Sortie</th><th>P&L</th></tr>
+  <tr><th>Heure</th><th>Sym</th><th>Side</th><th>Prix</th><th>Qty</th><th>Montant</th></tr>
   {trades_html if trades_html else '<tr><td colspan="6" style="text-align:center;color:#8b949e;padding:20px">En attente des signaux Belkhayate...</td></tr>'}
 </table>
 </div>
