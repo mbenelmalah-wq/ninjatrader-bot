@@ -528,70 +528,29 @@ def dashboard():
             </div>
         </div>"""
 
-    # Historique — appariement SELL→BUY(s) : un SELL peut fermer plusieurs BUY
-    orders_raw = api_call("GET", "/orders?status=closed&limit=200&direction=desc")
-    orders     = orders_raw if isinstance(orders_raw, list) else []
-    filled     = sorted(
-        [o for o in orders if o.get("status") == "filled"],
-        key=lambda o: o.get("filled_at", "")
-    )
-
-    buys_pending  = {}   # sym → [{"price", "qty", "idx"}]
-    trades_paired = []
-
-    for o in filled:
-        sym   = o.get("symbol", "").replace("/", "")
-        side  = o.get("side", "")
-        prix  = float(o.get("filled_avg_price") or 0)
-        qty   = float(o.get("filled_qty") or 0)
-        t_str = o.get("filled_at", "")[:16].replace("T", " ")
-        heure = t_str[11:16]
-
-        if side == "buy":
-            idx = len(trades_paired)
-            if sym not in buys_pending:
-                buys_pending[sym] = []
-            buys_pending[sym].append({"price": prix, "qty": qty, "heure": heure, "idx": idx})
-            trades_paired.append({"sym": sym, "side": "BUY", "entry": prix,
-                                   "exit": None, "pnl": None, "time": t_str, "heure": heure})
-
-        elif side == "sell":
-            # Un SELL peut fermer plusieurs BUY — consommer dans l'ordre chronologique
-            remaining = qty
-            for buy in list(buys_pending.get(sym, [])):
-                if remaining <= 0.00001:
-                    break
-                closed = min(buy["qty"], remaining)
-                pnl    = round((prix - buy["price"]) * closed, 2)
-                t      = trades_paired[buy["idx"]]
-                t["exit"]      = prix
-                t["pnl"]       = (t["pnl"] or 0) + pnl
-                t["exit_time"] = heure
-                remaining     -= closed
-                buy["qty"]    -= closed
-                if buy["qty"] <= 0.00001:
-                    buys_pending[sym].remove(buy)
-
+    # Historique depuis trades_history (RAM) — P&L calculé par le bot lui-même, toujours correct
     trades_html = ""
-    for t in reversed(trades_paired[-30:]):
-        pnl       = t.get("pnl")
-        is_closed = t.get("exit") is not None
+    history = list(reversed(trades_history[-40:]))
+    for t in history:
+        is_closed = "exit" in t and t.get("pnl") is not None
         sc        = "#ff5252" if is_closed else "#00e676"
         arrow     = "▼ SELL"  if is_closed else "▲ BUY"
-        exit_str  = f"${t['exit']:,.1f}" if is_closed else '<span style="color:#f0883e">En cours</span>'
+        heure     = t.get("time", "")[-5:] or t.get("time", "")[11:16]
+        entry     = t.get("entry", 0)
+        exit_val  = t.get("exit")
+        pnl       = t.get("pnl")
+        exit_str  = f"${exit_val:,.1f}" if exit_val else '<span style="color:#f0883e">En cours</span>'
         if pnl is not None:
             pc      = "#00e676" if pnl >= 0 else "#ff5252"
             pnl_str = f'<span style="color:{pc}">{"+$" if pnl>=0 else "-$"}{abs(pnl):.2f}</span>'
         else:
             pnl_str = '<span style="color:#f0883e">En cours</span>'
-        exit_time = t.get("exit_time", "")
-        heure_str = f'{t["heure"]}{"→"+exit_time if exit_time else ""}'
         trades_html += f"""
         <tr>
-            <td><small>{heure_str}</small></td>
-            <td>{t["sym"]}</td>
+            <td><small>{heure}</small></td>
+            <td>{t.get("symbol","")}</td>
             <td style="color:{sc}">{arrow}</td>
-            <td>${t["entry"]:,.1f}</td>
+            <td>${entry:,.1f}</td>
             <td>{exit_str}</td>
             <td>{pnl_str}</td>
         </tr>"""
