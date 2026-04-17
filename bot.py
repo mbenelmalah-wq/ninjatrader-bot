@@ -40,17 +40,52 @@ last_signal        = {}   # {"time", "symbol", "side", "source", "status"}
 consecutive_losses = 0
 pause_until        = None
 
+# ── Stop Orders Alpaca ────────────────────────────────────────────────────────
+def placer_stop_order(symbol, qty, stop_price, current_price=None):
+    """Place un Stop Market sell — s'exécute instantanément quand prix < stop_price."""
+    if current_price and stop_price >= current_price * 0.9995:
+        log.info(f"  STOP ORDER ignoré {symbol}: stop ({stop_price:.4f}) trop proche du prix ({current_price:.4f})")
+        return None
+    sym_api = f"{symbol[:3]}/USD"
+    payload = {
+        "symbol": sym_api, "qty": str(round(qty, 6)),
+        "side": "sell", "type": "stop",
+        "stop_price": str(round(stop_price, 4)),
+        "time_in_force": "gtc"
+    }
+    r = api_call("POST", "/orders", payload)
+    if r and r.get("id"):
+        log.info(f"  STOP ORDER placé {symbol} @ {stop_price:.4f} | id={r['id']}")
+        return r["id"]
+    log.warning(f"  STOP ORDER échec {symbol}: {r}")
+    return None
+
+def annuler_stop_order(order_id):
+    if not order_id:
+        return
+    try:
+        api_call("DELETE", f"/orders/{order_id}")
+    except Exception:
+        pass
+
+def mettre_a_jour_stop(symbol, old_id, new_sl, qty, current_price=None):
+    annuler_stop_order(old_id)
+    return placer_stop_order(symbol, qty, new_sl, current_price=current_price)
+
+
 # ── State trailing SL ─────────────────────────────────────────────────────────
 @dataclass
 class TrailSL:
-    symbol: str
-    entry:  float
-    side:   str
-    sl:     float
-    tp:     float
-    mise:   float
-    palier: float
-    step:   float
+    symbol:  str
+    entry:   float
+    side:    str
+    sl:      float
+    tp:      float
+    mise:    float
+    palier:  float
+    step:    float
+    stop_id: str   = field(default=None)
+    qty:     float = field(default=0.0)
 
 active_trails: dict[str, TrailSL] = {}
 
@@ -224,7 +259,28 @@ def monitor_loop():
                     try: prix_alpaca[sym_p] = float(p["current_price"])
                     except: pass
 
+            # Détecter positions fermées automatiquement par le Stop Order Alpaca
+            alpaca_syms = set()
+            if isinstance(pos_list, list):
+                for p in pos_list:
+                    s = p.get("symbol", "").replace("/", "")
+                    if not s.endswith("USD"):
+                        s += "USD"
+                    alpaca_syms.add(s)
+            closed_by_alpaca = []
             for symbol, t in list(active_trails.items()):
+                if symbol not in alpaca_syms:
+                    log.info(f"  STOP ORDER Alpaca exécuté: {symbol} — fermé automatiquement")
+                    pnl = round((t.sl - t.entry) / t.entry * t.mise, 2)
+                    _close_trade(symbol, t.sl, pnl, "Stop Order Alpaca")
+                    t.stop_id = None
+                    closed_by_alpaca.append(symbol)
+            for symbol in closed_by_alpaca:
+                active_trails.pop(symbol, None)
+
+            for symbol, t in list(active_trails.items()):
+                if symbol in closed_by_alpaca:
+                    continue
                 prix = prix_alpaca.get(symbol) or get_prix(symbol)
                 if not prix:
                     continue
@@ -233,14 +289,18 @@ def monitor_loop():
                     # TP atteint
                     if prix >= t.tp:
                         log.info(f"  TP atteint {symbol} @ {prix:.2f}")
+                        annuler_stop_order(t.stop_id)
+                        t.stop_id = None
                         api_call("DELETE", f"/positions/{symbol}")
                         pnl = round((prix - t.entry) / t.entry * t.mise, 2)
                         _close_trade(symbol, prix, pnl, "TP")
                         active_trails.pop(symbol, None)
                         continue
-                    # SL touché
+                    # SL touché (monitor de secours — le stop order Alpaca devrait avoir déjà agi)
                     if prix <= t.sl:
-                        log.info(f"  SL touché {symbol} @ {prix:.2f}")
+                        log.info(f"  SL touché {symbol} @ {prix:.2f} (monitor backup)")
+                        annuler_stop_order(t.stop_id)
+                        t.stop_id = None
                         api_call("DELETE", f"/positions/{symbol}")
                         pnl = round((prix - t.entry) / t.entry * t.mise, 2)
                         _close_trade(symbol, prix, pnl, "SL")
@@ -248,11 +308,15 @@ def monitor_loop():
                         continue
                     # Trail : montée du SL
                     if prix >= t.palier:
+                        ancien_sl = t.sl
                         nouveau_sl = round(prix - prix * t.step, 2)
                         if nouveau_sl > t.sl:
                             t.sl     = nouveau_sl
                             t.palier = round(prix + prix * t.step, 2)
                             log.info(f"  Trail {symbol} SL→{t.sl:.2f} palier→{t.palier:.2f}")
+                            # Mettre à jour le stop order Alpaca
+                            if t.qty > 0:
+                                t.stop_id = mettre_a_jour_stop(symbol, t.stop_id, t.sl, t.qty, current_price=prix)
 
         except Exception as e:
             log.error(f"Monitor error: {e}")
@@ -331,6 +395,9 @@ def webhook():
                 log.info(f"SELL {symbol} — aucune position ouverte, ignoré")
                 return jsonify({"status": "no_position_to_close"})
             trail = active_trails[symbol]
+            # Annuler le stop order avant fermeture manuelle
+            annuler_stop_order(trail.stop_id)
+            trail.stop_id = None
             prix  = get_prix(symbol) or trail.entry
             api_call("DELETE", f"/positions/{symbol}")
             pnl = round((prix - trail.entry) / trail.entry * trail.mise, 2)
@@ -397,11 +464,14 @@ def webhook():
             log.error(f"Ordre rejeté : {order}")
             return jsonify({"error": "ordre rejeté", "detail": order}), 500
 
-        # Enregistrement trail
-        active_trails[symbol] = TrailSL(
+        # Enregistrement trail + stop order initial
+        trail = TrailSL(
             symbol=symbol, entry=prix, side="buy",
-            sl=sl, tp=tp, mise=mise, palier=palier, step=step_pct
+            sl=sl, tp=tp, mise=mise, palier=palier, step=step_pct,
+            qty=qty
         )
+        trail.stop_id = placer_stop_order(symbol, qty, sl, current_price=prix)
+        active_trails[symbol] = trail
         cooldown_last[symbol] = datetime.utcnow()
 
         # Historique
@@ -445,18 +515,23 @@ def recover():
             tp_pct   = mm["take_profit_pct"]
             trig_pct = mm["profit_trigger_pct"]
             step_pct = mm["trail_step_pct"]
-            mise     = abs(float(p["market_value"]))
-            active_trails[sym] = TrailSL(
+            mise = abs(float(p["market_value"]))
+            qty  = abs(float(p.get("qty", 0)))
+            trail = TrailSL(
                 symbol=sym, entry=entry, side="buy",
                 sl=round(entry * (1 - sl_pct), 2),
                 tp=round(entry * (1 + tp_pct), 2),
                 mise=mise,
                 palier=round(entry * (1 + trig_pct), 2),
-                step=step_pct
+                step=step_pct,
+                qty=qty
             )
+            if qty > 0:
+                trail.stop_id = placer_stop_order(sym, qty, trail.sl)
+            active_trails[sym] = trail
             recovered.append({"symbol": sym, "entry": entry,
-                               "sl": active_trails[sym].sl,
-                               "tp": active_trails[sym].tp})
+                               "sl": trail.sl,
+                               "tp": trail.tp})
             log.info(f"  RECOVER {sym} entry={entry:.2f} SL={active_trails[sym].sl:.2f} TP={active_trails[sym].tp:.2f}")
         return jsonify({"status": "ok", "recovered": recovered})
     except Exception as e:
