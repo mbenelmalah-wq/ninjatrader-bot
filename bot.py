@@ -214,8 +214,18 @@ def load_history_from_alpaca():
 def monitor_loop():
     while True:
         try:
+            # Prix temps réel depuis Alpaca (priorité sur Binance/CoinGecko)
+            pos_list = api_call("GET", "/positions")
+            prix_alpaca = {}
+            if isinstance(pos_list, list):
+                for p in pos_list:
+                    sym_p = p.get("symbol","").replace("/","")
+                    if not sym_p.endswith("USD"): sym_p += "USD"
+                    try: prix_alpaca[sym_p] = float(p["current_price"])
+                    except: pass
+
             for symbol, t in list(active_trails.items()):
-                prix = get_prix(symbol)
+                prix = prix_alpaca.get(symbol) or get_prix(symbol)
                 if not prix:
                     continue
 
