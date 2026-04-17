@@ -761,9 +761,52 @@ def dashboard():
 <p style="text-align:center;color:#8b949e;font-size:.7rem;margin-top:12px">Refresh auto 15s — Belkhayate Orderflow → BTCUSD Alpaca</p>
 </body></html>"""
 
+# ── Auto-recovery au démarrage ────────────────────────────────────────────────
+def auto_recover():
+    """Reconstruit les trails depuis les positions Alpaca ouvertes au démarrage."""
+    try:
+        pos_list = api_call("GET", "/positions")
+        if not isinstance(pos_list, list):
+            return
+        count = 0
+        for p in pos_list:
+            sym = p["symbol"].replace("/", "")
+            if not sym.endswith("USD"):
+                sym += "USD"
+            if sym in active_trails:
+                continue
+            entry    = float(p["avg_entry_price"])
+            qty      = abs(float(p.get("qty", 0)))
+            sym_key  = f"money_management_{sym.upper()}"
+            mm       = config.get(sym_key, config["money_management_default"])
+            sl_pct   = mm["trailing_sl_pct"]
+            tp_pct   = mm["take_profit_pct"]
+            trig_pct = mm["profit_trigger_pct"]
+            step_pct = mm["trail_step_pct"]
+            mise     = abs(float(p["market_value"]))
+            trail    = TrailSL(
+                symbol=sym, entry=entry, side="buy",
+                sl=round(entry * (1 - sl_pct), 2),
+                tp=round(entry * (1 + tp_pct), 2),
+                mise=mise,
+                palier=round(entry * (1 + trig_pct), 2),
+                step=step_pct,
+                qty=qty
+            )
+            if qty > 0:
+                trail.stop_id = placer_stop_order(sym, qty, trail.sl)
+            active_trails[sym] = trail
+            count += 1
+            log.info(f"  AUTO-RECOVER {sym} entry={entry:.2f} SL={trail.sl:.2f} TP={trail.tp:.2f}")
+        if count:
+            log.info(f"Auto-recover : {count} trail(s) restauré(s)")
+    except Exception as e:
+        log.warning(f"auto_recover: {e}")
+
 # ── Start ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     load_history_from_alpaca()
+    auto_recover()   # Restaure les trails des positions déjà ouvertes
     t = threading.Thread(target=monitor_loop, daemon=True)
     t.start()
     port = int(os.environ.get("PORT", 8080))
