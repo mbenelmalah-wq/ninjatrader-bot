@@ -434,8 +434,8 @@ def webhook():
 
         # Prix + calcul SL/TP
         prix = float(data.get("price", 0)) or get_prix(symbol)
-if not prix:
-    return jsonify({"error": "prix indisponible"}), 500
+        if not prix:
+            return jsonify({"error": "prix indisponible"}), 500
 
         sl_pct   = mm["trailing_sl_pct"]
         tp_pct   = mm["take_profit_pct"]
@@ -452,9 +452,9 @@ if not prix:
             return jsonify({"error": "qty invalide"}), 500
 
        # Ordre Alpaca
-SP_SYMBOLS = {"SPY", "QQQ", "IVV"}
-if symbol.upper() in SP_SYMBOLS:
-    order = api_call("POST", "/orders", {
+       SP_SYMBOLS = {"SPY", "QQQ", "IVV"}
+       if symbol.upper() in SP_SYMBOLS:
+        order = api_call("POST", "/orders", {
         "symbol":        symbol.upper(),
         "notional":      str(round(mise, 2)),
         "side":          "buy",
