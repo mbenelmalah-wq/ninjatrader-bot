@@ -451,24 +451,24 @@ def webhook():
         if qty <= 0:
             return jsonify({"error": "qty invalide"}), 500
 
-       # Ordre Alpaca
-       SP_SYMBOLS = {"SPY", "QQQ", "IVV"}
-       if symbol.upper() in SP_SYMBOLS:
-        order = api_call("POST", "/orders", {
-        "symbol":        symbol.upper(),
-        "notional":      str(round(mise, 2)),
-        "side":          "buy",
-        "type":          "market",
-        "time_in_force": "day"
-    })
-else:
-    order = api_call("POST", "/orders", {
-        "symbol":        f"{symbol[:3]}/USD",
-        "qty":           str(qty),
-        "side":          "buy",
-        "type":          "market",
-        "time_in_force": "gtc"
-    })
+               # Ordre Alpaca
+        SP_SYMBOLS = {"SPY", "QQQ", "IVV"}
+        if symbol.upper() in SP_SYMBOLS:
+            order = api_call("POST", "/orders", {
+                "symbol":        symbol.upper(),
+                "notional":      str(round(mise, 2)),
+                "side":          "buy",
+                "type":          "market",
+                "time_in_force": "day"
+            })
+        else:
+            order = api_call("POST", "/orders", {
+                "symbol":        f"{symbol[:3]}/USD",
+                "qty":           str(qty),
+                "side":          "buy",
+                "type":          "market",
+                "time_in_force": "gtc"
+            })
 
         if "error" in order or order.get("status") == "rejected":
             log.error(f"Ordre rejeté : {order}")
