@@ -433,9 +433,9 @@ def webhook():
             return jsonify({"status": "insufficient_capital"})
 
         # Prix + calcul SL/TP
-        prix = get_prix(symbol)
-        if not prix:
-            return jsonify({"error": "prix indisponible"}), 500
+        prix = float(data.get("price", 0)) or get_prix(symbol)
+if not prix:
+    return jsonify({"error": "prix indisponible"}), 500
 
         sl_pct   = mm["trailing_sl_pct"]
         tp_pct   = mm["take_profit_pct"]
